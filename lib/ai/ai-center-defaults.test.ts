@@ -155,12 +155,12 @@ describe('DEFAULT_AI_FALLBACK', () => {
 })
 
 describe('DEFAULT_AI_GATEWAY', () => {
-  it('deve estar desabilitado por padrao', () => {
-    expect(DEFAULT_AI_GATEWAY.enabled).toBe(false)
+  it('deve estar habilitado por padrao', () => {
+    expect(DEFAULT_AI_GATEWAY.enabled).toBe(true)
   })
 
-  it('deve ter apiKey vazia por padrao', () => {
-    expect(DEFAULT_AI_GATEWAY.apiKey).toBe('')
+  it('deve ter primaryModel no formato provider/model', () => {
+    expect(DEFAULT_AI_GATEWAY.primaryModel).toMatch(/^[a-z]+\//)
   })
 
   it('deve ter useBYOK habilitado', () => {

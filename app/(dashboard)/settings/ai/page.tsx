@@ -10,6 +10,7 @@ import {
   FileText,
   FormInput,
   Info,
+  Loader2,
   Megaphone,
   ShieldCheck,
   Sparkles,
@@ -507,6 +508,7 @@ export default function AICenterPage() {
     isLoading,
     isSaving,
     isSavingKey,
+    isActivating,
     errorMessage,
     ocrConfig,
     mistralKeyDraft,
@@ -562,6 +564,15 @@ export default function AICenterPage() {
       {errorMessage && (
         <div className="mb-4 rounded-2xl border border-[var(--ds-status-error)]/20 bg-[var(--ds-status-error-bg)] px-4 py-3 text-xs text-[var(--ds-status-error-text)]">
           {errorMessage}
+        </div>
+      )}
+
+      {isActivating && (
+        <div className="mb-4 rounded-2xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-xs text-blue-400 flex items-center gap-2">
+          <Loader2 className="size-3.5 animate-spin shrink-0" />
+          <span>
+            Chave salva. Ativando no AI Gateway — aguarde o redeploy (~2 min)...
+          </span>
         </div>
       )}
 

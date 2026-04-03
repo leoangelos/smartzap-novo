@@ -83,7 +83,6 @@ async function getHeliconeConfig(): Promise<{ apiKey: string } | null> {
 function resolveGatewayAuthToken(gatewayConfig: AiGatewayConfig): string | null {
   return (
     process.env.AI_GATEWAY_API_KEY ||
-    gatewayConfig.apiKey ||
     process.env.VERCEL_OIDC_TOKEN ||
     null
   )

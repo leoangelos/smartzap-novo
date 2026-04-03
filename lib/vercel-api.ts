@@ -1,477 +1,153 @@
 /**
- * Vercel API Client
- * 
- * Used for managing environment variables and deployments
- * during the setup wizard
+ * Cliente para a API REST do Vercel.
+ *
+ * Responsabilidades:
+ * - Gravar environment variables no projeto (para BYOK via AI Gateway)
+ * - Disparar redeploy após mudança de env vars
+ * - Consultar status de deployment em andamento
+ *
+ * Requer as variáveis: VERCEL_API_TOKEN, VERCEL_PROJECT_ID, VERCEL_TEAM_ID
  */
 
-const VERCEL_API_BASE = 'https://api.vercel.com'
+const VERCEL_API = 'https://api.vercel.com'
 
-export interface VercelProject {
-  id: string
-  name: string
-  accountId: string
-  alias?: { domain: string }[]  // Custom domains
-  targets?: {
-    production?: {
-      alias?: string[]
-    }
-  }
+// Mapeamento provider → nome da env var que o AI Gateway lê automaticamente
+export const PROVIDER_ENV_VAR: Record<string, string> = {
+    google: 'GOOGLE_GENERATIVE_AI_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
 }
 
-export interface VercelDeployment {
-  uid: string
-  id?: string
-  name: string
-  url: string
-  state: 'BUILDING' | 'ERROR' | 'INITIALIZING' | 'QUEUED' | 'READY' | 'CANCELED'
-  readyState: 'BUILDING' | 'ERROR' | 'INITIALIZING' | 'QUEUED' | 'READY' | 'CANCELED'
+export type DeployStatus = 'QUEUED' | 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED'
+
+function getConfig() {
+    const token = process.env.VERCEL_API_TOKEN
+    const projectId = process.env.VERCEL_PROJECT_ID ?? 'prj_t74m8dEfJzTfuIDEwnhfXoTY5pfx'
+    const teamId = process.env.VERCEL_TEAM_ID ?? 'team_GUT7m6INuJVIxmlVzOnuiRyY'
+    return { token, projectId, teamId }
 }
 
-export interface VercelEnvVar {
-  key: string
-  value: string
-  type: 'encrypted' | 'plain' | 'secret'
-  target: ('production' | 'preview' | 'development')[]
-}
-
-export interface VercelApiResult<T> {
-  success: boolean
-  data?: T
-  error?: string
+export function isVercelApiConfigured(): boolean {
+    return !!process.env.VERCEL_API_TOKEN
 }
 
 /**
- * Validate a Vercel token
+ * Cria ou atualiza uma environment variable no projeto Vercel.
+ *
+ * @param key   Nome da variável (ex: "OPENAI_API_KEY")
+ * @param value Valor a persistir
+ * @param target Ambientes alvo (default: production + preview + development)
  */
-export async function validateToken(token: string): Promise<VercelApiResult<{ userId: string }>> {
-  try {
-    const response = await fetch(`${VERCEL_API_BASE}/v2/user`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
+export async function setEnvVar(
+    key: string,
+    value: string,
+    target: string[] = ['production', 'preview', 'development'],
+): Promise<void> {
+    const { token, projectId, teamId } = getConfig()
+    if (!token) throw new Error('[Vercel API] VERCEL_API_TOKEN não configurado.')
 
-    if (!response.ok) {
-      return { success: false, error: 'Token inválido' }
-    }
-
-    const data = await response.json()
-    return { success: true, data: { userId: data.user.id } }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao validar token' }
-  }
-}
-
-/**
- * Find project by domain (current hostname)
- * Uses the domains API which is more reliable for custom domains
- */
-export async function findProjectByDomain(
-  token: string,
-  domain: string
-): Promise<VercelApiResult<VercelProject>> {
-  try {
-    const normalizedDomain = domain.toLowerCase().replace(/^www\./, '')
-    console.log('[findProjectByDomain] Searching for domain:', normalizedDomain)
-
-    // STRATEGY 1: Try to get project directly by domain using Vercel's domain API
-    // This is the most reliable method for custom domains
-    const domainResponse = await fetch(`${VERCEL_API_BASE}/v6/domains/${normalizedDomain}/config`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (domainResponse.ok) {
-      const domainData = await domainResponse.json()
-      console.log('[findProjectByDomain] Domain API response:', domainData)
-      
-      // If we got configuredBy (project ID), fetch that project
-      if (domainData.configuredBy) {
-        const projectResult = await getProject(token, domainData.configuredBy)
-        if (projectResult.success && projectResult.data) {
-          console.log('[findProjectByDomain] Found project by domain config:', projectResult.data.name)
-          return projectResult
-        }
-      }
-    }
-
-    // STRATEGY 2: List all projects and check aliases
-    const response = await fetch(`${VERCEL_API_BASE}/v9/projects`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return { success: false, error: 'Erro ao buscar projetos' }
-    }
-
-    const data = await response.json()
-    const projects: VercelProject[] = data.projects || []
-
-    console.log('[findProjectByDomain] Found projects:', projects.map(p => p.name))
-    
-    // Check custom domains/aliases
-    for (const project of projects) {
-      const projectAliases = project.alias?.map(a => a.domain.toLowerCase()) || []
-      const targetAliases = project.targets?.production?.alias?.map(a => a.toLowerCase()) || []
-      const allAliases = [...projectAliases, ...targetAliases]
-      
-      console.log(`[findProjectByDomain] Project ${project.name} aliases:`, allAliases)
-      
-      if (allAliases.includes(normalizedDomain)) {
-        console.log(`[findProjectByDomain] MATCH by alias! Project: ${project.name}`)
-        return { success: true, data: project }
-      }
-    }
-
-    // STRATEGY 3: Check if domain is exactly project-name.vercel.app
-    for (const project of projects) {
-      const vercelDomain = `${project.name.toLowerCase()}.vercel.app`
-      if (normalizedDomain === vercelDomain) {
-        console.log(`[findProjectByDomain] MATCH by vercel.app! Project: ${project.name}`)
-        return { success: true, data: project }
-      }
-    }
-
-    // STRATEGY 4: For each project, fetch its domains explicitly
-    console.log('[findProjectByDomain] Checking project domains explicitly...')
-    for (const project of projects) {
-      const domainsResponse = await fetch(`${VERCEL_API_BASE}/v9/projects/${project.id}/domains`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      
-      if (domainsResponse.ok) {
-        const domainsData = await domainsResponse.json()
-        const domains = domainsData.domains?.map((d: { name: string }) => d.name.toLowerCase()) || []
-        
-        console.log(`[findProjectByDomain] Project ${project.name} domains:`, domains)
-        
-        if (domains.includes(normalizedDomain)) {
-          console.log(`[findProjectByDomain] MATCH by project domains! Project: ${project.name}`)
-          return { success: true, data: project }
-        }
-      }
-    }
-
-    // STRATEGY 5: Fallback for localhost only
-    if (normalizedDomain === 'localhost' || normalizedDomain.includes('localhost:')) {
-      if (projects.length > 0) {
-        console.log('[findProjectByDomain] Fallback to first project for localhost')
-        return { success: true, data: projects[0] }
-      }
-    }
-
-    return { success: false, error: 'Projeto não encontrado para este domínio' }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao buscar projeto' }
-  }
-}
-
-/**
- * Get project by ID
- */
-export async function getProject(
-  token: string,
-  projectId: string,
-  teamId?: string
-): Promise<VercelApiResult<VercelProject>> {
-  try {
-    const url = new URL(`${VERCEL_API_BASE}/v9/projects/${projectId}`)
-    if (teamId) url.searchParams.set('teamId', teamId)
-
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return { success: false, error: 'Projeto não encontrado' }
-    }
-
-    const project = await response.json()
-    return { success: true, data: project }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao buscar projeto' }
-  }
-}
-
-/**
- * Get all environment variables for a project
- */
-export async function getEnvVars(
-  token: string,
-  projectId: string,
-  teamId?: string
-): Promise<VercelApiResult<VercelEnvVar[]>> {
-  try {
-    const url = new URL(`${VERCEL_API_BASE}/v9/projects/${projectId}/env`)
-    if (teamId) url.searchParams.set('teamId', teamId)
-
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return { success: false, error: 'Erro ao buscar variáveis' }
-    }
-
-    const data = await response.json()
-    return { success: true, data: data.envs || [] }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao buscar variáveis' }
-  }
-}
-
-/**
- * Create or update an environment variable
- */
-export async function upsertEnvVar(
-  token: string,
-  projectId: string,
-  envVar: { key: string; value: string },
-  teamId?: string
-): Promise<VercelApiResult<void>> {
-  try {
-    // First, try to find existing env var
-    const existingResult = await getEnvVars(token, projectId, teamId)
-    const existing = existingResult.data?.find(e => e.key === envVar.key)
-
-    const url = new URL(`${VERCEL_API_BASE}/v10/projects/${projectId}/env`)
-    if (teamId) url.searchParams.set('teamId', teamId)
-
-    if (existing) {
-      // Update existing - need to use the env var ID
-      const getUrl = new URL(`${VERCEL_API_BASE}/v9/projects/${projectId}/env`)
-      if (teamId) getUrl.searchParams.set('teamId', teamId)
-      
-      const listResponse = await fetch(getUrl.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const listData = await listResponse.json()
-      const envWithId = listData.envs?.find((e: { key: string }) => e.key === envVar.key)
-      
-      if (envWithId) {
-        const patchUrl = new URL(`${VERCEL_API_BASE}/v9/projects/${projectId}/env/${envWithId.id}`)
-        if (teamId) patchUrl.searchParams.set('teamId', teamId)
-        
-        const response = await fetch(patchUrl.toString(), {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            value: envVar.value,
-          }),
-        })
-
-        if (!response.ok) {
-          const error = await response.json()
-          return { success: false, error: error.error?.message || 'Erro ao atualizar variável' }
-        }
-      }
-    } else {
-      // Create new
-      const response = await fetch(url.toString(), {
+    const url = `${VERCEL_API}/v10/projects/${projectId}/env?teamId=${teamId}&upsert=true`
+    const res = await fetch(url, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          key: envVar.key,
-          value: envVar.value,
-          type: 'encrypted',
-          target: ['production', 'preview', 'development'],
-        }),
-      })
+        body: JSON.stringify({ key, value, type: 'encrypted', target }),
+    })
 
-      if (!response.ok) {
-        const error = await response.json()
-        return { success: false, error: error.error?.message || 'Erro ao criar variável' }
-      }
+    if (!res.ok) {
+        const body = await res.text()
+        throw new Error(`[Vercel API] Falha ao gravar env var "${key}": ${res.status} — ${body}`)
     }
-
-    return { success: true }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao salvar variável' }
-  }
 }
 
 /**
- * Set multiple environment variables at once
+ * Persiste a chave de API de um provider como env var no Vercel.
+ * O AI Gateway lê essas variáveis automaticamente para BYOK.
  */
-export async function setEnvVars(
-  token: string,
-  projectId: string,
-  envVars: { key: string; value: string }[],
-  teamId?: string
-): Promise<VercelApiResult<{ saved: number; errors: string[] }>> {
-  const errors: string[] = []
-  let saved = 0
-
-  for (const envVar of envVars) {
-    const result = await upsertEnvVar(token, projectId, envVar, teamId)
-    if (result.success) {
-      saved++
-    } else {
-      errors.push(`${envVar.key}: ${result.error}`)
-    }
-  }
-
-  return {
-    success: errors.length === 0,
-    data: { saved, errors },
-    error: errors.length > 0 ? errors.join(', ') : undefined,
-  }
+export async function setProviderApiKey(provider: string, apiKey: string): Promise<void> {
+    const envVar = PROVIDER_ENV_VAR[provider]
+    if (!envVar) throw new Error(`[Vercel API] Provider desconhecido: "${provider}"`)
+    await setEnvVar(envVar, apiKey)
 }
 
 /**
- * Trigger a new deployment
+ * Dispara um redeploy no Vercel.
+ *
+ * Tenta o deploy hook primeiro (mais simples). Se não configurado,
+ * usa a API REST para redeployar o último deployment de produção.
+ *
+ * @returns ID do novo deployment criado (ou '' para deploy hook)
  */
-export async function triggerDeployment(
-  token: string,
-  projectId: string,
-  teamId?: string
-): Promise<VercelApiResult<VercelDeployment>> {
-  try {
-    // Get the project to find the git repo
-    const projectResult = await getProject(token, projectId, teamId)
-    if (!projectResult.success || !projectResult.data) {
-      return { success: false, error: 'Projeto não encontrado' }
+export async function triggerRedeploy(): Promise<string> {
+    // Preferir deploy hook quando disponível — mais simples e sem permissões extras
+    const deployHookUrl = process.env.VERCEL_DEPLOY_HOOK_URL
+    if (deployHookUrl) {
+        const res = await fetch(deployHookUrl, { method: 'POST' })
+        if (!res.ok) {
+            const body = await res.text()
+            throw new Error(`[Vercel API] Deploy hook falhou: ${res.status} — ${body}`)
+        }
+        const data = await res.json() as { job?: { id?: string } }
+        return data?.job?.id ?? ''
     }
 
-    const url = new URL(`${VERCEL_API_BASE}/v13/deployments`)
-    if (teamId) url.searchParams.set('teamId', teamId)
+    // Fallback: API REST — encontra o último deployment de produção e redeployar
+    const { token, projectId, teamId } = getConfig()
+    if (!token) throw new Error('[Vercel API] VERCEL_API_TOKEN não configurado.')
 
-    const response = await fetch(url.toString(), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        name: projectResult.data.name,
-        project: projectId,
-        target: 'production',
-      }),
+    // 1. Busca último deployment de produção
+    const listUrl = `${VERCEL_API}/v6/deployments?projectId=${projectId}&teamId=${teamId}&target=production&limit=1`
+    const listRes = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${token}` },
     })
-
-    if (!response.ok) {
-      const error = await response.json()
-      return { success: false, error: error.error?.message || 'Erro ao criar deployment' }
+    if (!listRes.ok) {
+        throw new Error(`[Vercel API] Falha ao listar deployments: ${listRes.status}`)
     }
+    const listData = await listRes.json() as { deployments?: Array<{ uid: string }> }
+    const lastDeploymentId = listData.deployments?.[0]?.uid
+    if (!lastDeploymentId) throw new Error('[Vercel API] Nenhum deployment de produção encontrado.')
 
-    const deployment = await response.json()
-    return { success: true, data: deployment }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao criar deployment' }
-  }
+    // 2. Redeployar
+    const redeployUrl = `${VERCEL_API}/v13/deployments?teamId=${teamId}&forceNew=1`
+    const redeployRes = await fetch(redeployUrl, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deploymentId: lastDeploymentId, target: 'production' }),
+    })
+    if (!redeployRes.ok) {
+        const body = await redeployRes.text()
+        throw new Error(`[Vercel API] Falha ao disparar redeploy: ${redeployRes.status} — ${body}`)
+    }
+    const redeployData = await redeployRes.json() as { id?: string }
+    return redeployData.id ?? ''
 }
 
 /**
- * Get deployment status
+ * Consulta o status atual de um deployment.
  */
-export async function getDeploymentStatus(
-  token: string,
-  deploymentId: string,
-  teamId?: string
-): Promise<VercelApiResult<VercelDeployment>> {
-  try {
-    const url = new URL(`${VERCEL_API_BASE}/v13/deployments/${deploymentId}`)
-    if (teamId) url.searchParams.set('teamId', teamId)
+export async function getDeploymentStatus(deploymentId: string): Promise<DeployStatus> {
+    const { token, teamId } = getConfig()
+    if (!token) throw new Error('[Vercel API] VERCEL_API_TOKEN não configurado.')
+    if (!deploymentId) return 'QUEUED'
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const url = `${VERCEL_API}/v13/deployments/${deploymentId}?teamId=${teamId}`
+    const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
     })
+    if (!res.ok) throw new Error(`[Vercel API] Falha ao consultar deployment: ${res.status}`)
 
-    if (!response.ok) {
-      return { success: false, error: 'Deployment não encontrado' }
-    }
+    const data = await res.json() as { readyState?: string }
+    const state = data.readyState?.toUpperCase() ?? 'QUEUED'
 
-    const deployment = await response.json()
-    return { success: true, data: deployment }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao buscar status' }
-  }
-}
-
-/**
- * Redeploy the latest deployment (simpler than creating new)
- */
-export async function redeployLatest(
-  token: string,
-  projectId: string,
-  teamId?: string
-): Promise<VercelApiResult<VercelDeployment>> {
-  try {
-    // Get latest deployment
-    const url = new URL(`${VERCEL_API_BASE}/v6/deployments`)
-    url.searchParams.set('projectId', projectId)
-    url.searchParams.set('limit', '1')
-    url.searchParams.set('target', 'production')
-    if (teamId) url.searchParams.set('teamId', teamId)
-
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return { success: false, error: 'Erro ao buscar deployment' }
-    }
-
-    const data = await response.json()
-    const latestDeployment = data.deployments?.[0]
-
-    if (!latestDeployment) {
-      return { success: false, error: 'Nenhum deployment encontrado' }
-    }
-
-    // Redeploy
-    const redeployUrl = new URL(`${VERCEL_API_BASE}/v13/deployments`)
-    if (teamId) redeployUrl.searchParams.set('teamId', teamId)
-
-    const redeployResponse = await fetch(redeployUrl.toString(), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        deploymentId: latestDeployment.uid,
-        name: latestDeployment.name,
-        target: 'production',
-      }),
-    })
-
-    if (!redeployResponse.ok) {
-      const error = await redeployResponse.json()
-      return { success: false, error: error.error?.message || 'Erro ao fazer redeploy' }
-    }
-
-    const deployment = await redeployResponse.json()
-    return { success: true, data: deployment }
-  } catch (error) {
-    console.error('Vercel API error:', error)
-    return { success: false, error: 'Erro ao fazer redeploy' }
-  }
+    // Normaliza para DeployStatus
+    if (state === 'READY') return 'READY'
+    if (state === 'ERROR') return 'ERROR'
+    if (state === 'CANCELED') return 'CANCELED'
+    if (state === 'BUILDING' || state === 'INITIALIZING') return 'BUILDING'
+    return 'QUEUED'
 }

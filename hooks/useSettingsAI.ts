@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AI_PROVIDERS, type AIProvider } from '@/lib/ai/providers'
 import { useDevMode } from '@/components/providers/DevModeProvider'
 import { DEFAULT_MODEL_ID } from '@/lib/ai/model'
@@ -114,6 +114,10 @@ export const useSettingsAIController = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  // BYOK activation polling
+  const [isActivating, setIsActivating] = useState(false)
+  const activationPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // OCR State
   const [ocrConfig, setOcrConfig] = useState<OCRConfig>(DEFAULT_OCR_CONFIG)
@@ -280,13 +284,22 @@ export const useSettingsAIController = () => {
     }
     setIsSavingKey(true)
     try {
-      await settingsService.saveAIConfig({
+      const result = await settingsService.saveAIConfig({
         apiKey,
         apiKeyProvider: targetProvider,
-      })
+      }) as { pendingActivation?: boolean; deploymentId?: string }
+
       setApiKeyDrafts((current) => ({ ...current, [targetProvider]: '' }))
       setInlineKeyProvider(null)
-      toast.success('Chave atualizada')
+
+      if (result?.pendingActivation && result?.deploymentId) {
+        setIsActivating(true)
+        toast.info('Chave salva. Ativando no AI Gateway (~2 min)...')
+        startActivationPolling(result.deploymentId)
+      } else {
+        toast.success('Chave atualizada')
+      }
+
       await loadConfig()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro ao salvar chave'
@@ -295,6 +308,41 @@ export const useSettingsAIController = () => {
       setIsSavingKey(false)
     }
   }
+
+  const startActivationPolling = useCallback((deploymentId: string) => {
+    // Limpa polling anterior se existir
+    if (activationPollRef.current) clearInterval(activationPollRef.current)
+
+    activationPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/vercel/deploy-status?deploymentId=${deploymentId}`)
+        if (!res.ok) return
+        const { status } = await res.json() as { status: string }
+
+        if (status === 'READY') {
+          clearInterval(activationPollRef.current!)
+          activationPollRef.current = null
+          setIsActivating(false)
+          toast.success('AI Gateway ativado com sucesso!')
+          await loadConfig()
+        } else if (status === 'ERROR' || status === 'CANCELED') {
+          clearInterval(activationPollRef.current!)
+          activationPollRef.current = null
+          setIsActivating(false)
+          toast.error('Falha na ativação do Gateway. Tente salvar a chave novamente.')
+        }
+      } catch {
+        // Silently ignore poll errors
+      }
+    }, 15_000) // Polling a cada 15s
+  }, [loadConfig])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (activationPollRef.current) clearInterval(activationPollRef.current)
+    }
+  }, [])
 
   // OCR Handlers
   const handleOcrProviderChange = async (newProvider: OCRProviderType) => {
@@ -440,6 +488,7 @@ export const useSettingsAIController = () => {
     isLoading,
     isSaving,
     isSavingKey,
+    isActivating,
     errorMessage,
 
     // OCR

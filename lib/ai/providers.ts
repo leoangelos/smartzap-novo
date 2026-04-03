@@ -54,9 +54,9 @@ export const AI_PROVIDERS: AIProviderConfig[] = [
         name: 'Anthropic (Claude)',
         icon: '🧠',
         models: [
-            { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', description: 'Máxima inteligência' },
-            { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Equilíbrio performance/custo' },
-            { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', description: 'Rápido e leve' },
+            { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', description: 'Máxima inteligência' },
+            { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', description: 'Equilíbrio performance/custo' },
+            { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', description: 'Rápido e leve' },
         ],
     },
 ];

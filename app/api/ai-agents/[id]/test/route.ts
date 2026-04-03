@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { z } from 'zod'
-import { DEFAULT_MODEL_ID } from '@/lib/ai/model'
+import { DEFAULT_MODEL_ID, normalizeToGatewayModelId } from '@/lib/ai/model'
 import {
   findRelevantContent,
   buildEmbeddingConfigFromAgent,
@@ -141,31 +141,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     console.log(`[ai-agents/test] hasKnowledgeBase: ${hasKnowledgeBase}, indexed files: ${indexedFilesCount}`)
 
     // Import AI dependencies dynamically
-    const { generateText, tool, stepCountIs } = await import('ai')
+    const { generateText, gateway, tool, stepCountIs } = await import('ai')
     const { withDevTools } = await import('@/lib/ai/devtools')
-    const { createLanguageModel, getProviderFromModel } = await import('@/lib/ai/provider-factory')
 
-    // Get model configuration - supports Google, OpenAI, Anthropic
-    const modelId = agent.model || DEFAULT_MODEL_ID
-    const provider = getProviderFromModel(modelId)
-
-    let baseModel
-    let llmApiKey: string
-    try {
-      const result = await createLanguageModel(modelId)
-      baseModel = result.model
-      llmApiKey = result.apiKey
-    } catch (err) {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : 'Erro ao criar modelo de IA' },
-        { status: 500 }
-      )
-    }
+    // Criar modelo via Gateway
+    const modelId = normalizeToGatewayModelId(agent.model || DEFAULT_MODEL_ID)
+    const baseModel = gateway(modelId)
 
     // Create model with DevTools support
     const model = await withDevTools(baseModel, { name: `agente:${agent.name}` })
 
-    console.log(`[ai-agents/test] Using provider: ${provider}, model: ${modelId}`)
+    console.log(`[ai-agents/test] Using model: ${modelId} (via Gateway)`)
 
     // Generate response
     const startTime = Date.now()

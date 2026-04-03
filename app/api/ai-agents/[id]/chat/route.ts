@@ -27,7 +27,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { z } from 'zod'
-import { DEFAULT_MODEL_ID } from '@/lib/ai/model'
+import { DEFAULT_MODEL_ID, normalizeToGatewayModelId } from '@/lib/ai/model'
 import {
   findRelevantContent,
   buildEmbeddingConfigFromAgent,
@@ -243,30 +243,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const hasKnowledgeBase = await hasIndexedContent(agentId)
 
     // Import AI dependencies
-    const { generateText, tool, stepCountIs } = await import('ai')
+    const { generateText, gateway, tool, stepCountIs } = await import('ai')
     const { withDevTools } = await import('@/lib/ai/devtools')
-    const { createLanguageModel, getProviderFromModel } = await import('@/lib/ai/provider-factory')
 
-    // Criar modelo
-    const modelId = agent.model || DEFAULT_MODEL_ID
-    const provider = getProviderFromModel(modelId)
-
-    let baseModel
-    let llmApiKey: string
-    try {
-      const result = await createLanguageModel(modelId)
-      baseModel = result.model
-      llmApiKey = result.apiKey
-    } catch (err) {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : 'Erro ao criar modelo de IA' },
-        { status: 500 }
-      )
-    }
-
+    // Criar modelo via Gateway
+    const modelId = normalizeToGatewayModelId(agent.model || DEFAULT_MODEL_ID)
+    const baseModel = gateway(modelId)
     const model = await withDevTools(baseModel, { name: `chat:${agent.name}` })
 
-    console.log(`[ai-agents/chat] Provider: ${provider}, model: ${modelId}, hasKB: ${hasKnowledgeBase}`)
+    console.log(`[ai-agents/chat] Using model: ${modelId} (via Gateway), hasKB: ${hasKnowledgeBase}`)
 
     // Preparar resposta estruturada
     let structuredResponse: ChatResponse | undefined

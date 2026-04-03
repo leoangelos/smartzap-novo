@@ -14,17 +14,17 @@ export type AiRoutesConfig = {
 /**
  * Configuração do Vercel AI Gateway.
  *
- * O Gateway permite roteamento automático entre providers com fallbacks,
- * observability centralizada e BYOK (Bring Your Own Key).
+ * Autenticação via OIDC (VERCEL_OIDC_TOKEN) — automático com `vercel env pull`.
+ * BYOK: usa as chaves dos providers configuradas no SmartZap — zero markup.
  */
 export type AiGatewayConfig = {
-  /** Se o Gateway está habilitado (default: false = usa conexão direta) */
+  /** Se o Gateway está habilitado */
   enabled: boolean
-  /** API Key do AI Gateway (obtida em https://vercel.com/docs/ai-gateway) */
-  apiKey: string
+  /** Modelo principal no formato "provider/model" (ex: "google/gemini-3-flash-preview") */
+  primaryModel: string
   /** Se true, usa as chaves dos providers configuradas no SmartZap via BYOK */
   useBYOK: boolean
-  /** Modelos de fallback no formato "provider/model" (ex: "anthropic/claude-sonnet-4") */
+  /** Modelos de fallback no formato "provider/model" (ex: "anthropic/claude-haiku-4.5") */
   fallbackModels: string[]
 }
 
@@ -55,18 +55,18 @@ export const DEFAULT_AI_FALLBACK: AiFallbackConfig = {
   models: {
     google: 'gemini-3-flash-preview',
     openai: 'gpt-5-mini',
-    anthropic: 'claude-sonnet-4-5',
+    anthropic: 'claude-sonnet-4.5',
   },
 }
 
 /**
  * Default: Gateway habilitado com BYOK.
- * Autenticação via AI_GATEWAY_API_KEY (estático, não expira) ou VERCEL_OIDC_TOKEN (fallback).
+ * Autenticação via VERCEL_OIDC_TOKEN (automático com `vercel env pull`).
  * BYOK: passa as chaves dos providers configurados no SmartZap — zero markup no Gateway.
  */
 export const DEFAULT_AI_GATEWAY: AiGatewayConfig = {
   enabled: true,
-  apiKey: '',
+  primaryModel: 'google/gemini-3-flash-preview',
   useBYOK: true,
   fallbackModels: ['anthropic/claude-haiku-4.5', 'openai/gpt-5.4'],
 }

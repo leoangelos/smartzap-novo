@@ -124,7 +124,7 @@ async function getEmbeddingModel(config: EmbeddingConfig) {
     }
 
     const openai = createOpenAI({
-      apiKey: gatewayConfig.apiKey || 'dummy',
+      apiKey: process.env.VERCEL_OIDC_TOKEN || process.env.AI_GATEWAY_API_KEY || 'dummy',
       baseURL: AI_GATEWAY_BASE_URL,
       headers,
     })

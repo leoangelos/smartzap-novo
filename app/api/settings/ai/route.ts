@@ -5,6 +5,7 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { generateText } from 'ai'
 import { clearSettingsCache } from '@/lib/ai'
+import { isVercelApiConfigured, setProviderApiKey, triggerRedeploy } from '@/lib/vercel-api'
 import { DEFAULT_AI_FALLBACK, DEFAULT_AI_GATEWAY, DEFAULT_AI_PROMPTS, DEFAULT_AI_ROUTES } from '@/lib/ai/ai-center-defaults'
 import { DEFAULT_MODEL_ID } from '@/lib/ai/model'
 import { DEFAULT_OCR_MODEL } from '@/lib/ai/ocr/providers/gemini'
@@ -19,6 +20,16 @@ import {
   prepareAiPromptsUpdate,
   prepareAiRoutesUpdate,
 } from '@/lib/ai/ai-center-config'
+
+/**
+ * Valida se uma string está no formato "provider/model" do AI Gateway.
+ * Exemplos válidos: "google/gemini-2.5-flash", "anthropic/claude-sonnet-4.5"
+ */
+function isValidGatewayModelId(modelId: unknown): boolean {
+    if (!modelId || typeof modelId !== 'string') return false;
+    const parts = modelId.split('/');
+    return parts.length === 2 && !!parts[0] && !!parts[1];
+}
 
 /**
  * Validation result with support for warnings (valid but with issues)
@@ -46,12 +57,12 @@ async function validateApiKey(provider: string, apiKey: string): Promise<Validat
             }
             case 'openai': {
                 const openai = createOpenAI({ apiKey })
-                model = openai('gpt-4o-mini')
+                model = openai('gpt-4.1-mini')
                 break
             }
             case 'anthropic': {
                 const anthropic = createAnthropic({ apiKey })
-                model = anthropic('claude-3-haiku-20240307')
+                model = anthropic('claude-3-5-haiku-20241022')
                 break
             }
             default:
@@ -364,6 +375,30 @@ export async function POST(request: NextRequest) {
         }
 
         if (gateway) {
+            // Valida formato "provider/model" do primaryModel antes de persistir
+            if (gateway.primaryModel !== undefined && !isValidGatewayModelId(gateway.primaryModel)) {
+                return NextResponse.json(
+                    {
+                        error: `Formato de modelo inválido: "${gateway.primaryModel}". Use "provider/model" — ex: "google/gemini-2.5-flash", "anthropic/claude-sonnet-4.5".`,
+                    },
+                    { status: 400 }
+                )
+            }
+
+            // Valida formato de cada modelo no fallbackModels
+            if (Array.isArray(gateway.fallbackModels)) {
+                for (const fallbackModel of gateway.fallbackModels) {
+                    if (!isValidGatewayModelId(fallbackModel)) {
+                        return NextResponse.json(
+                            {
+                                error: `Formato inválido no fallbackModels: "${fallbackModel}". Use "provider/model" — ex: "openai/gpt-5.4".`,
+                            },
+                            { status: 400 }
+                        )
+                    }
+                }
+            }
+
             const currentGateway = await getAiGatewayConfig()
             const normalizedGateway = prepareAiGatewayUpdate({ ...currentGateway, ...gateway })
             updates.push({
@@ -455,10 +490,32 @@ export async function POST(request: NextRequest) {
         clearSettingsCache()
         clearAiCenterCache()
 
+        // Ativa BYOK no AI Gateway: persiste a chave como env var no Vercel + redeploy
+        // O Gateway lê as env vars padrão (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) automaticamente
+        let pendingActivation = false
+        let deploymentId: string | undefined
+        if (apiKey && isVercelApiConfigured()) {
+            const targetProvider = apiKeyProvider || provider || 'google'
+            try {
+                await setProviderApiKey(targetProvider, apiKey)
+                deploymentId = await triggerRedeploy()
+                pendingActivation = true
+                console.log(`[AI Settings] BYOK ativado para ${targetProvider}, deployment: ${deploymentId}`)
+            } catch (vercelError) {
+                // Não bloqueia o save — a chave está no banco, o usuário pode redeploy manualmente
+                console.error('[AI Settings] Falha ao ativar BYOK no Vercel:', vercelError)
+            }
+        }
+
         return NextResponse.json({
             success: true,
             message: 'AI configuration saved successfully',
             saved: updates.map(u => u.key),
+            ...(pendingActivation && {
+                pendingActivation: true,
+                deploymentId,
+                message: 'Configuração salva. Ativando no AI Gateway (~2 min)...',
+            }),
         })
     } catch (error) {
         console.error('Error saving AI settings:', error)

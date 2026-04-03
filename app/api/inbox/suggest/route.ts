@@ -4,11 +4,10 @@
  * Used by the AI Co-pilot feature in the inbox
  */
 
-import { streamText, tool } from 'ai'
+import { streamText, gateway, tool } from 'ai'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase-server'
-import { createLanguageModel, getProviderFromModel } from '@/lib/ai/provider-factory'
-import { DEFAULT_MODEL_ID } from '@/lib/ai/model'
+import { DEFAULT_MODEL_ID, normalizeToGatewayModelId } from '@/lib/ai/model'
 import { inboxDb } from '@/lib/inbox/inbox-db'
 import type { AIAgent, InboxConversation } from '@/types'
 
@@ -166,22 +165,11 @@ export async function POST(req: Request) {
         content: m.content,
       }))
 
-    // Create AI model using provider factory (supports Google, OpenAI, Anthropic)
-    const modelId = agent.model || DEFAULT_MODEL_ID
-    const provider = getProviderFromModel(modelId)
+    // Create AI model via Gateway
+    const modelId = normalizeToGatewayModelId(agent.model || DEFAULT_MODEL_ID)
+    const model = gateway(modelId)
 
-    let model
-    try {
-      const result = await createLanguageModel(modelId)
-      model = result.model
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: err instanceof Error ? err.message : 'Erro ao criar modelo de IA' }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      )
-    }
-
-    console.log(`[inbox/suggest] Using provider: ${provider}, model: ${modelId}`)
+    console.log(`[inbox/suggest] Using model: ${modelId} (via Gateway)`)
 
     // Capture structured response
     let suggestion: SuggestResponse | undefined
