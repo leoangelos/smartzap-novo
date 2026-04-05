@@ -130,3 +130,4 @@ PRD-campaigns-new.md
 AUDIT_*.md
 BUG_INVESTIGATION_REPORT_*.md
 test-*.csv
+.worktrees/
