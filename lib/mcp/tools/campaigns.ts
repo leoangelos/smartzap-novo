@@ -30,7 +30,7 @@ export function registerCampaignsTools(server: McpServer) {
       let query = db
         .from('campaigns')
         .select(
-          'id, name, status, template_name, recipients, sent, delivered, read, failed, scheduled_at, created_at'
+          'id, name, status, template_name, total_recipients, sent, delivered, read, failed, scheduled_date, created_at'
         )
         .order('created_at', { ascending: false })
         .limit(limit)

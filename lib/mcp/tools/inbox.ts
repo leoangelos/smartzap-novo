@@ -15,7 +15,7 @@ export function registerInboxTools(server: McpServer) {
       title: 'Listar conversas',
       description: 'Lista conversas do inbox com filtros opcionais.',
       inputSchema: {
-        status: z.enum(['active', 'resolved', 'bot', 'human']).optional(),
+        status: z.enum(['open', 'closed', 'bot', 'human']).optional().describe('open/closed = status da conversa; bot/human = modo de atendimento'),
         search: z.string().optional().describe('Busca por nome ou telefone'),
         limit: z.number().int().min(1).max(50).default(20),
       },
@@ -25,23 +25,23 @@ export function registerInboxTools(server: McpServer) {
       if (!db) return err('Banco não configurado')
 
       let query = db
-        .from('conversations')
+        .from('inbox_conversations')
         .select(
-          'id, contact_id, phone, contact_name, status, last_message, last_message_at, is_bot_active, unread_count'
+          'id, contact_id, phone, status, mode, last_message_preview, last_message_at, unread_count, priority'
         )
         .order('last_message_at', { ascending: false })
         .limit(limit)
 
       if (status === 'bot') {
-        query = query.eq('is_bot_active', true)
+        query = query.eq('mode', 'bot')
       } else if (status === 'human') {
-        query = query.eq('is_bot_active', false)
+        query = query.eq('mode', 'human')
       } else if (status) {
         query = query.eq('status', status)
       }
 
       if (search) {
-        query = query.or(`contact_name.ilike.%${search}%,phone.ilike.%${search}%`)
+        query = query.ilike('phone', `%${search}%`)
       }
 
       const { data, error } = await query
@@ -67,10 +67,10 @@ export function registerInboxTools(server: McpServer) {
       if (!db) return err('Banco não configurado')
 
       const [convResult, msgResult] = await Promise.all([
-        db.from('conversations').select('*').eq('id', id).maybeSingle(),
+        db.from('inbox_conversations').select('*').eq('id', id).maybeSingle(),
         db
-          .from('messages')
-          .select('id, role, content, type, status, created_at')
+          .from('inbox_messages')
+          .select('id, direction, content, message_type, delivery_status, created_at')
           .eq('conversation_id', id)
           .order('created_at', { ascending: false })
           .limit(messageLimit),
